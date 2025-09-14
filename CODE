@@ -1,0 +1,230 @@
+-- STEP 1: Create Database
+CREATE DATABASE aircargo;
+USE aircargo;
+
+-- STEP 2: Create Tables from datasets
+CREATE TABLE customer (
+    customer_id INT PRIMARY KEY,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
+    date_of_birth DATE,
+    gender VARCHAR(10)
+);
+
+CREATE TABLE passengers_on_flights (
+    aircraft_id INT,
+    route_id INT,
+    customer_id INT,
+    depart VARCHAR(50),
+    arrival VARCHAR(50),
+    seat_num VARCHAR(10),
+    class_id VARCHAR(20),
+    travel_date DATE,
+    flight_num VARCHAR(20),
+    FOREIGN KEY (customer_id) REFERENCES customer(customer_id)
+);
+
+CREATE TABLE ticket_details (
+    p_date DATE,
+    customer_id INT,
+    aircraft_id INT,
+    class_id VARCHAR(20),
+    no_of_tickets INT,
+    a_code VARCHAR(10),
+    price_per_ticket DECIMAL(10,2),
+    brand VARCHAR(50),
+    FOREIGN KEY (customer_id) REFERENCES customer(customer_id)
+);
+
+CREATE TABLE routes (
+    route_id INT PRIMARY KEY,
+    flight_num VARCHAR(20),
+    origin_airport VARCHAR(50),
+    destination_airport VARCHAR(50),
+    aircraft_id INT,
+    distance_miles INT
+);
+
+-- STEP 3: Load CSV Data
+-- Adjust file paths according to your system before running
+LOAD DATA INFILE '/path/to/customer.csv'
+INTO TABLE customer
+FIELDS TERMINATED BY ','
+IGNORE 1 ROWS;
+
+LOAD DATA INFILE '/path/to/passengers_on_flights.csv'
+INTO TABLE passengers_on_flights
+FIELDS TERMINATED BY ','
+IGNORE 1 ROWS;
+
+LOAD DATA INFILE '/path/to/ticket_details.csv'
+INTO TABLE ticket_details
+FIELDS TERMINATED BY ','
+IGNORE 1 ROWS;
+
+LOAD DATA INFILE '/path/to/routes.csv'
+INTO TABLE routes
+FIELDS TERMINATED BY ','
+IGNORE 1 ROWS;
+
+-- STEP 4: Tasks from problem statement
+
+-- 4.1 Create route_details table with constraints
+CREATE TABLE route_details (
+    route_id INT UNIQUE,
+    flight_num VARCHAR(20) CHECK (flight_num REGEXP '^[A-Z0-9]+$'),
+    origin_airport VARCHAR(50),
+    destination_airport VARCHAR(50),
+    aircraft_id INT,
+    distance_miles INT CHECK (distance_miles > 0)
+);
+
+-- 4.2 Passengers in routes 01–25
+SELECT * 
+FROM passengers_on_flights
+WHERE route_id BETWEEN 1 AND 25;
+
+-- 4.3 Number of passengers & total revenue in Business class
+SELECT 
+    SUM(no_of_tickets) AS total_passengers,
+    SUM(no_of_tickets * price_per_ticket) AS total_revenue
+FROM ticket_details
+WHERE class_id = 'Business';
+
+-- 4.4 Full name of customers
+SELECT CONCAT(first_name, ' ', last_name) AS full_name
+FROM customer;
+
+-- 4.5 Customers who registered AND booked a ticket
+SELECT c.customer_id, c.first_name, c.last_name
+FROM customer c
+INNER JOIN ticket_details t ON c.customer_id = t.customer_id;
+
+-- 4.6 Customer’s name by customer ID & brand = 'Emirates'
+SELECT c.first_name, c.last_name
+FROM customer c
+INNER JOIN ticket_details t ON c.customer_id = t.customer_id
+WHERE t.brand = 'Emirates';
+
+-- 4.7 Customers travelled in Economy Plus (Group By + Having)
+SELECT class_id, customer_id, COUNT(*) AS trips
+FROM passengers_on_flights
+GROUP BY class_id, customer_id
+HAVING class_id = 'Economy Plus';
+
+-- 4.8 Revenue crossed 10000 (IF clause)
+SELECT 
+    IF(SUM(no_of_tickets * price_per_ticket) > 10000,
+       'Revenue > 10000','Revenue <= 10000') AS revenue_status
+FROM ticket_details;
+
+-- 4.9 Create & grant access to a new user
+CREATE USER 'aircargo_user'@'localhost' IDENTIFIED BY 'password123';
+GRANT ALL PRIVILEGES ON aircargo.* TO 'aircargo_user'@'localhost';
+
+-- 4.10 Max ticket price for each class (window function)
+SELECT class_id, price_per_ticket,
+       MAX(price_per_ticket) OVER (PARTITION BY class_id) AS max_price
+FROM ticket_details;
+
+-- 4.11 Improve performance for route_id=4
+CREATE INDEX idx_routeid ON passengers_on_flights(route_id);
+SELECT * FROM passengers_on_flights WHERE route_id = 4;
+
+-- 4.12 View execution plan for route_id=4
+EXPLAIN SELECT * FROM passengers_on_flights WHERE route_id = 4;
+
+-- 4.13 Total price of tickets by customer across aircraft (ROLLUP)
+SELECT customer_id, aircraft_id,
+       SUM(no_of_tickets * price_per_ticket) AS total_amount
+FROM ticket_details
+GROUP BY customer_id, aircraft_id WITH ROLLUP;
+
+-- 4.14 View with only Business class customers + brand
+CREATE VIEW BusinessClassCustomers AS
+SELECT t.customer_id, c.first_name, c.last_name, t.brand
+FROM ticket_details t
+JOIN customer c ON t.customer_id = c.customer_id
+WHERE t.class_id = 'Business';
+
+-- 4.15 Stored procedure: passengers between route range
+DELIMITER //
+CREATE PROCEDURE GetPassengersByRouteRange(IN start_route INT, IN end_route INT)
+BEGIN
+    IF (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_NAME = 'passengers_on_flights') = 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Table does not exist';
+    ELSE
+        SELECT * FROM passengers_on_flights
+        WHERE route_id BETWEEN start_route AND end_route;
+    END IF;
+END //
+DELIMITER ;
+
+-- 4.16 Stored procedure: routes distance > 2000
+DELIMITER //
+CREATE PROCEDURE GetLongRoutes()
+BEGIN
+    SELECT * FROM routes WHERE distance_miles > 2000;
+END //
+DELIMITER ;
+
+-- 4.17 Stored procedure: categorize distance travelled
+DELIMITER //
+CREATE PROCEDURE CategorizeRoutes()
+BEGIN
+    SELECT route_id, flight_num, distance_miles,
+           CASE
+             WHEN distance_miles BETWEEN 0 AND 2000 THEN 'SDT'
+             WHEN distance_miles > 2000 AND distance_miles <= 6500 THEN 'IDT'
+             WHEN distance_miles > 6500 THEN 'LDT'
+           END AS DistanceCategory
+    FROM routes;
+END //
+DELIMITER ;
+
+-- 4.18 Stored function: complimentary services
+DELIMITER //
+CREATE FUNCTION ComplimentaryServices(class_name VARCHAR(20))
+RETURNS VARCHAR(5)
+DETERMINISTIC
+BEGIN
+    IF class_name IN ('Business', 'Economy Plus') THEN
+        RETURN 'Yes';
+    ELSE
+        RETURN 'No';
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure using function
+DELIMITER //
+CREATE PROCEDURE GetTicketComplimentary()
+BEGIN
+    SELECT p_date, customer_id, class_id,
+           ComplimentaryServices(class_id) AS Complimentary
+    FROM ticket_details;
+END //
+DELIMITER ;
+
+-- 4.19 Cursor: first record of customer with last name ending 'Scott'
+DELIMITER //
+CREATE PROCEDURE GetScottCustomer()
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE cid INT;
+    DECLARE fname VARCHAR(50);
+    DECLARE lname VARCHAR(50);
+    DECLARE cur CURSOR FOR
+        SELECT customer_id, first_name, last_name 
+        FROM customer WHERE last_name LIKE '%Scott';
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+
+    OPEN cur;
+    FETCH cur INTO cid, fname, lname;
+    IF NOT done THEN
+        SELECT cid AS customer_id, fname AS first_name, lname AS last_name;
+    END IF;
+    CLOSE cur;
+END //
+DELIMITER ;
